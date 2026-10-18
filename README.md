@@ -80,7 +80,7 @@ brew untap Tupig/tokenstatmenu
 
 更新源固定为公开 `Tupig/TokenStatMenu`。只接受非草稿、非预发布的数字稳定版本 `vMAJOR.MINOR.PATCH`，按数字比较，不降级；同版本任一 pin 字段冲突会失败关闭。标签必须解析为实际提交，不能用 Release 的分支名代替。
 
-Release 必须正好包含两个 ZIP、`release-manifest.json` 和 `SHA256SUMS`。更新器交叉核对版本、构建、标签提交、文件名、字节数、摘要与实际源码包，再检查 ZIP 的路径、类型、CRC、数量/体积上限以及原生工程/资源。它不会执行下载的 Ruby 或源码来决定是否更新，也不会接受自定义仓库或任意下载地址。
+当前 1.1.4 历史 Release 正好包含两个 ZIP、`release-manifest.json` 和 `SHA256SUMS`；从 1.1.5 起，稳定 Release 还必须包含同一 App 的 Universal DMG，合计五项资产。更新器交叉核对版本、构建、标签提交、文件名、字节数、摘要与实际源码包，再检查 ZIP/DMG 的路径、类型、CRC、数量/体积上限以及原生工程/资源。它不会执行下载的 Ruby 或源码来决定是否更新，也不会接受自定义仓库或任意下载地址。
 
 自动更新采用三个 job：
 

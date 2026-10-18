@@ -124,7 +124,7 @@ def validate_download_url(url, *, redirect=False):
         raise ValidationError("download_url") from None
     require("\\" not in parts.path and not any(p in (".", "..") for p in parts.path.split("/")), "download_path")
     if parts.hostname == "github.com":
-        pattern = r"/Tupig/TokenStatMenu/releases/download/v" + VERSION + r"/(?:TokenStatMenu-" + VERSION + r"-(?:source|universal)\.zip|release-manifest\.json|SHA256SUMS)"
+        pattern = r"/Tupig/TokenStatMenu/releases/download/v" + VERSION + r"/(?:TokenStatMenu-" + VERSION + r"-(?:source|universal)\.zip|TokenStatMenu-" + VERSION + r"-universal\.dmg|release-manifest\.json|SHA256SUMS)"
         require(not parts.query and re.fullmatch(pattern, parts.path, flags=re.ASCII), "download_path")
     else:
         paths = {
@@ -187,12 +187,17 @@ def validate_release(release, manifest_bytes, sums_bytes, tag_commit):
     require(isinstance(release, dict) and release.get("draft") is False
             and release.get("prerelease") is False and release.get("tag_name") == tag, "release_kind")
     require(release.get("html_url") == f"https://github.com/{REPOSITORY}/releases/tag/{tag}", "release_origin")
-    exact(manifest["assets"], {"source", "universal"}, "asset_schema")
+    version_tuple = tuple(map(int, version.split(".")))
+    asset_kinds = {"source", "universal"}
+    if version_tuple >= (1, 1, 5):
+        asset_kinds.add("dmg")
+    exact(manifest["assets"], asset_kinds, "asset_schema")
     declared = {}
-    for kind in ("source", "universal"):
+    for kind in sorted(asset_kinds):
         value = manifest["assets"][kind]
         exact(value, {"name", "bytes", "sha256"}, "asset_schema")
-        expected = f"TokenStatMenu-{version}-{kind}.zip"
+        expected = (f"TokenStatMenu-{version}-universal.dmg"
+                    if kind == "dmg" else f"TokenStatMenu-{version}-{kind}.zip")
         require(value["name"] == expected, "asset_name")
         maximum = MAX_SOURCE_BYTES if kind == "source" else 128 * 1024 * 1024
         require(type(value["bytes"]) is int and 0 < value["bytes"] <= maximum, "asset_size")
@@ -204,7 +209,7 @@ def validate_release(release, manifest_bytes, sums_bytes, tag_commit):
     require(sums_bytes == expected_sums, "sums_identity")
     declared["SHA256SUMS"] = (len(sums_bytes), sha(sums_bytes))
     assets = release.get("assets")
-    require(isinstance(assets, list) and len(assets) == 4, "release_assets")
+    require(isinstance(assets, list) and len(assets) == len(declared), "release_assets")
     observed = set()
     for asset in assets:
         require(isinstance(asset, dict) and isinstance(asset.get("name"), str), "release_assets")

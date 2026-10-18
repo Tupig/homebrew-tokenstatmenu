@@ -93,6 +93,14 @@ class ReleaseFixture:
                               "bytes": len(self.universal), "sha256": digest(self.universal)},
             },
         }
+        if tuple(map(int, version.split("."))) >= (1, 1, 5):
+            self.dmg = b"synthetic dmg image; never mounted"
+            self.manifest["assets"]["dmg"] = {
+                "name": f"TokenStatMenu-{version}-universal.dmg",
+                "bytes": len(self.dmg), "sha256": digest(self.dmg),
+            }
+        else:
+            self.dmg = None
         self.refresh()
 
     def refresh(self, *, manifest_bytes=None):
@@ -105,6 +113,8 @@ class ReleaseFixture:
             self.manifest["assets"]["universal"]["name"]: self.manifest["assets"]["universal"]["sha256"],
             "release-manifest.json": digest(self.manifest_bytes),
         }
+        if "dmg" in self.manifest["assets"]:
+            self.sums[self.manifest["assets"]["dmg"]["name"]] = self.manifest["assets"]["dmg"]["sha256"]
         self.sums_bytes = "".join(f"{self.sums[name]}  {name}\n" for name in sorted(self.sums)).encode()
         all_assets = {
             self.manifest["assets"]["source"]["name"]: self.source,
@@ -112,6 +122,8 @@ class ReleaseFixture:
             "release-manifest.json": self.manifest_bytes,
             "SHA256SUMS": self.sums_bytes,
         }
+        if self.dmg is not None:
+            all_assets[self.manifest["assets"]["dmg"]["name"]] = self.dmg
         self.release = {
             "tag_name": self.manifest["tag"], "draft": False, "prerelease": False,
             "html_url": f"https://github.com/{REPOSITORY}/releases/tag/{self.manifest['tag']}",
@@ -290,6 +302,22 @@ class ReleaseIdentityChecks(unittest.TestCase):
         self.assertIn(digest(fixture.source), formula)
         self.assertIn(COMMIT, formula)
         self.assertEqual(subject.read_current_pin(formula), pin)
+
+    def test_next_release_requires_the_verified_dmg_asset(self):
+        fixture = ReleaseFixture("1.1.5", "7", "c" * 40)
+        pin = fixture.pin()
+        self.assertEqual(pin.version, "1.1.5")
+        self.assertIn("TokenStatMenu-1.1.5-universal.dmg",
+                      {asset["name"] for asset in fixture.release["assets"]})
+        self.assertEqual(len(fixture.release["assets"]), 5)
+        altered = copy.deepcopy(fixture.manifest)
+        del altered["assets"]["dmg"]
+        fixture.refresh(manifest_bytes=encoded(altered))
+        self.reject(fixture.pin)
+        fixture = ReleaseFixture("1.1.5", "7", "c" * 40)
+        fixture.release["assets"] = [asset for asset in fixture.release["assets"]
+                                      if not asset["name"].endswith("-universal.dmg")]
+        self.reject(fixture.pin)
 
     def test_numeric_versions_increase_and_whole_pin_noop(self):
         old = ReleaseFixture("1.1.2", "4", OLD_COMMIT).pin()
