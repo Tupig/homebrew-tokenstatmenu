@@ -1,0 +1,51 @@
+name: Verify source Formula
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Synthetic release, updater and workflow checks
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s Tests -v
+  native:
+    needs: unit
+    runs-on: macos-15
+    permissions:
+      contents: read
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Test the checked-out Formula in this disposable runner
+        run: |
+          set -euo pipefail
+          brew trust --formula Tupig/tokenstatmenu/tokenstatmenu
+          brew tap Tupig/tokenstatmenu "$GITHUB_WORKSPACE"
+          brew style Tupig/tokenstatmenu/tokenstatmenu
+          brew audit --strict Tupig/tokenstatmenu/tokenstatmenu
+          brew install --build-from-source Tupig/tokenstatmenu/tokenstatmenu
+          brew test Tupig/tokenstatmenu/tokenstatmenu

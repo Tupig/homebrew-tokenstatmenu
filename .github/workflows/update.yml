@@ -1,0 +1,92 @@
+name: Update from verified stable Release
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-tokenstatmenu-formula
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.candidate.outputs.changed }}
+      pin: ${{ steps.candidate.outputs.pin }}
+      old_blob_sha: ${{ steps.base.outputs.old_blob_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Synthetic release, updater and workflow checks
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s Tests -v
+      - name: Record the exact old Formula blob
+        id: base
+        run: |
+          set -euo pipefail
+          old_blob_sha="$(git rev-parse HEAD:Formula/tokenstatmenu.rb)"
+          echo "old_blob_sha=$old_blob_sha" >> "$GITHUB_OUTPUT"
+      - name: Validate public Release and stage a candidate without credentials
+        id: candidate
+        run: |
+          set -euo pipefail
+          python3 script/update_formula.py --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/tokenstatmenu.rb" --github-output "$GITHUB_OUTPUT"
+  smoke:
+    needs: check
+    if: ${{ needs.check.outputs.changed == 'true' }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    env:
+      TESTED_PIN: ${{ needs.check.outputs.pin }}
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Reconstruct and build the exact candidate in a disposable runner
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s Tests -v
+          brew trust --formula Tupig/tokenstatmenu/tokenstatmenu
+          brew tap Tupig/tokenstatmenu "$GITHUB_WORKSPACE"
+          tap_directory="$(brew --repository Tupig/tokenstatmenu)"
+          python3 script/update_formula.py --current "$tap_directory/Formula/tokenstatmenu.rb" --output "$tap_directory/Formula/tokenstatmenu.rb" --expected-pin "$TESTED_PIN"
+          brew style Tupig/tokenstatmenu/tokenstatmenu
+          brew audit --strict Tupig/tokenstatmenu/tokenstatmenu
+          brew install --build-from-source Tupig/tokenstatmenu/tokenstatmenu
+          brew test Tupig/tokenstatmenu/tokenstatmenu
+  publish:
+    needs: [check, smoke]
+    if: ${{ needs.check.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TESTED_PIN: ${{ needs.check.outputs.pin }}
+      OLD_BLOB_SHA: ${{ needs.check.outputs.old_blob_sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Recheck latest identity and old blob, then update only the Formula
+        run: |
+          set -euo pipefail
+          old_blob_sha="$OLD_BLOB_SHA"
+          current_blob_sha="$(gh api repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --jq .sha)"
+          python3 script/update_formula.py --prepare-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha" --current-blob-sha "$current_blob_sha"
+          gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"
