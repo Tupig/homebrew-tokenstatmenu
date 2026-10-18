@@ -1,11 +1,11 @@
-# release-pin: {"build":"6","commit":"5214d546a6b13493350d30d0c288219eeb23548d","source_bytes":2127902,"source_name":"TokenStatMenu-1.1.4-source.zip","source_sha256":"d3f6a55518f2e9e9d84b718ec7806dd741bacbee6c3fb9e4307b0269ed6efe3b","tag":"v1.1.4","version":"1.1.4"}
+# release-pin: {"build":"7","commit":"d4ee8a1080b6a4d54ff1cbc0594aac924798a3ac","source_bytes":2136023,"source_name":"TokenStatMenu-1.1.5-source.zip","source_sha256":"1108c7021905f5222e8f638b1294bdddfaa364eb87bf4be5e36353ea1ceaf8c9","tag":"v1.1.5","version":"1.1.5"}
 require "shellwords"
 
 class Tokenstatmenu < Formula
   desc "Native menu bar usage statistics for Seasun Token Hub"
   homepage "https://github.com/Tupig/TokenStatMenu"
-  url "https://github.com/Tupig/TokenStatMenu/releases/download/v1.1.4/TokenStatMenu-1.1.4-source.zip"
-  sha256 "d3f6a55518f2e9e9d84b718ec7806dd741bacbee6c3fb9e4307b0269ed6efe3b"
+  url "https://github.com/Tupig/TokenStatMenu/releases/download/v1.1.5/TokenStatMenu-1.1.5-source.zip"
+  sha256 "1108c7021905f5222e8f638b1294bdddfaa364eb87bf4be5e36353ea1ceaf8c9"
   license "MIT"
 
   depends_on xcode: ["15.0", :build]
@@ -25,11 +25,11 @@ class Tokenstatmenu < Formula
     built_version = Utils.safe_popen_read(plist, "-c", "Print :CFBundleShortVersionString", info).strip
     built_build = Utils.safe_popen_read(plist, "-c", "Print :CFBundleVersion", info).strip
     odie "Release version mismatch" if built_version != version.to_s
-    odie "Release build mismatch" if built_build != "6"
+    odie "Release build mismatch" if built_build != "7"
     libexec.install built
     app = libexec/"TokenStatMenu.app"
     system "/usr/bin/plutil", "-replace", "TokenStatSourceRevision", "-string",
-           "5214d546a6b13493350d30d0c288219eeb23548d", app/"Contents/Info.plist"
+           "d4ee8a1080b6a4d54ff1cbc0594aac924798a3ac", app/"Contents/Info.plist"
     system "/usr/bin/plutil", "-replace", "TokenStatSourceState", "-string",
            "release-source", app/"Contents/Info.plist"
     system "/usr/bin/codesign", "--force", "--sign", "-", app
@@ -70,8 +70,8 @@ class Tokenstatmenu < Formula
     info = app/"Contents/Info.plist"
     plist = "/usr/libexec/PlistBuddy"
     assert_equal version.to_s, Utils.safe_popen_read(plist, "-c", "Print :CFBundleShortVersionString", info).strip
-    assert_equal "6", Utils.safe_popen_read(plist, "-c", "Print :CFBundleVersion", info).strip
-    assert_equal "5214d546a6b13493350d30d0c288219eeb23548d",
+    assert_equal "7", Utils.safe_popen_read(plist, "-c", "Print :CFBundleVersion", info).strip
+    assert_equal "d4ee8a1080b6a4d54ff1cbc0594aac924798a3ac",
                  Utils.safe_popen_read(plist, "-c", "Print :TokenStatSourceRevision", info).strip
     assert_equal "release-source", Utils.safe_popen_read(plist, "-c", "Print :TokenStatSourceState", info).strip
     assert_equal "edfc3aa520be04f987cc6c8a273995f57bafca68603d89f8265c640d0009e980", Digest::SHA256.file(app/"Contents/Resources/AppIcon.icns").hexdigest
