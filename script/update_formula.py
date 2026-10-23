@@ -4,6 +4,7 @@
 Public downloads are unauthenticated. Only the separate workflow publication
 job receives its own repository token; this module never reads credentials.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -56,7 +57,10 @@ def exact(value, keys, category):
 
 
 def text_matches(value, pattern):
-    return isinstance(value, str) and re.fullmatch(pattern, value, flags=re.ASCII) is not None
+    return (
+        isinstance(value, str)
+        and re.fullmatch(pattern, value, flags=re.ASCII) is not None
+    )
 
 
 def sha(data):
@@ -69,12 +73,14 @@ def json_bytes(value):
 
 def parse_json(data, maximum):
     require(isinstance(data, bytes) and len(data) <= maximum, "json_size")
+
     def pairs(values):
         result = {}
         for key, value in values:
             require(key not in result, "duplicate_key")
             result[key] = value
         return result
+
     try:
         return json.loads(data, object_pairs_hook=pairs)
     except ValidationError:
@@ -100,8 +106,16 @@ def validate_pin(pin):
     require(text_matches(pin.build, r"[1-9][0-9]{0,8}"), "build")
     require(pin.tag == "v" + pin.version, "tag")
     require(text_matches(pin.commit, COMMIT), "commit")
-    require(pin.source_name == f"TokenStatMenu-{pin.version}-source.zip", "asset_name")
-    require(type(pin.source_bytes) is int and 0 < pin.source_bytes <= MAX_SOURCE_BYTES, "asset_size")
+    source_name = (
+        "TokenStatMenu-source.zip"
+        if tuple(map(int, pin.version.split("."))) >= (1, 1, 7)
+        else f"TokenStatMenu-{pin.version}-source.zip"
+    )
+    require(pin.source_name == source_name, "asset_name")
+    require(
+        type(pin.source_bytes) is int and 0 < pin.source_bytes <= MAX_SOURCE_BYTES,
+        "asset_size",
+    )
     require(text_matches(pin.source_sha256, SHA256), "asset_sha")
 
 
@@ -114,26 +128,55 @@ def pin_from_json(data):
 
 
 def validate_download_url(url, *, redirect=False):
-    require(isinstance(url, str) and len(url) <= 8192
-            and not any(ord(c) < 32 or ord(c) == 127 for c in url), "download_url")
+    require(
+        isinstance(url, str)
+        and len(url) <= 8192
+        and not any(ord(c) < 32 or ord(c) == 127 for c in url),
+        "download_url",
+    )
     try:
         parts = urllib.parse.urlsplit(url)
-        require(parts.scheme == "https" and not parts.username and not parts.password
-                and parts.port in (None, 443) and not parts.fragment, "download_url")
+        require(
+            parts.scheme == "https"
+            and not parts.username
+            and not parts.password
+            and parts.port in (None, 443)
+            and not parts.fragment,
+            "download_url",
+        )
     except ValueError:
         raise ValidationError("download_url") from None
-    require("\\" not in parts.path and not any(p in (".", "..") for p in parts.path.split("/")), "download_path")
+    require(
+        "\\" not in parts.path
+        and not any(p in (".", "..") for p in parts.path.split("/")),
+        "download_path",
+    )
     if parts.hostname == "github.com":
-        pattern = r"/Tupig/TokenStatMenu/releases/download/v" + VERSION + r"/(?:TokenStatMenu-" + VERSION + r"-(?:source|universal)\.zip|TokenStatMenu-" + VERSION + r"-universal\.dmg|release-manifest\.json|SHA256SUMS)"
-        require(not parts.query and re.fullmatch(pattern, parts.path, flags=re.ASCII), "download_path")
+        pattern = (
+            r"/Tupig/TokenStatMenu/releases/download/v"
+            + VERSION
+            + r"/(?:TokenStatMenu-"
+            + VERSION
+            + r"-(?:source|universal)\.zip|TokenStatMenu-"
+            + VERSION
+            + r"-universal\.dmg|TokenStatMenu(?:-source)?\.zip|TokenStatMenu\.dmg|release-manifest\.json|SHA256SUMS)"
+        )
+        require(
+            not parts.query and re.fullmatch(pattern, parts.path, flags=re.ASCII),
+            "download_path",
+        )
     else:
         paths = {
             "release-assets.githubusercontent.com": "/github-production-release-asset/",
             "objects.githubusercontent.com": "/github-production-release-asset-2e65be/",
         }
-        require(redirect and parts.hostname in paths
-                and parts.path.startswith(paths[parts.hostname])
-                and len(parts.path) > len(paths[parts.hostname]), "redirect_origin")
+        require(
+            redirect
+            and parts.hostname in paths
+            and parts.path.startswith(paths[parts.hostname])
+            and len(parts.path) > len(paths[parts.hostname]),
+            "redirect_origin",
+        )
 
 
 class CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -147,7 +190,11 @@ class CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
         if result is not None:
             for collection in (result.headers, result.unredirected_hdrs):
                 for name in list(collection):
-                    if name.lower() in {"authorization", "proxy-authorization", "cookie"}:
+                    if name.lower() in {
+                        "authorization",
+                        "proxy-authorization",
+                        "cookie",
+                    }:
                         del collection[name]
         return result
 
@@ -157,11 +204,25 @@ class PublicTransport:
         self.opener = urllib.request.build_opener(CheckedRedirectHandler())
 
     def get(self, url, *, max_bytes):
-        api_pattern = re.escape(API) + r"/(?:releases/latest|git/ref/tags/v" + VERSION + r"|git/tags/" + COMMIT + r")"
+        api_pattern = (
+            re.escape(API)
+            + r"/(?:releases/latest|git/ref/tags/v"
+            + VERSION
+            + r"|git/tags/"
+            + COMMIT
+            + r")"
+        )
         if not re.fullmatch(api_pattern, url, flags=re.ASCII):
             validate_download_url(url, redirect=False)
-        request = urllib.request.Request(url, headers={"User-Agent": "TokenStatMenu-Homebrew-Updater",
-                                                     "Accept": "application/vnd.github+json" if url.startswith(API) else "application/octet-stream"})
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "TokenStatMenu-Homebrew-Updater",
+                "Accept": "application/vnd.github+json"
+                if url.startswith(API)
+                else "application/octet-stream",
+            },
+        )
         with self.opener.open(request, timeout=NETWORK_TIMEOUT) as response:
             final = response.geturl()
             if url.startswith(API):
@@ -170,7 +231,10 @@ class PublicTransport:
                 validate_download_url(final, redirect=True)
             length = response.headers.get("Content-Length")
             if length is not None:
-                require(text_matches(length, r"[0-9]+") and int(length) <= max_bytes, "response_size")
+                require(
+                    text_matches(length, r"[0-9]+") and int(length) <= max_bytes,
+                    "response_size",
+                )
             data = response.read(max_bytes + 1)
             require(len(data) <= max_bytes, "response_size")
             return data
@@ -179,14 +243,25 @@ class PublicTransport:
 def validate_release(release, manifest_bytes, sums_bytes, tag_commit):
     manifest = parse_json(manifest_bytes, MAX_MANIFEST_BYTES)
     exact(manifest, {"version", "build", "tag", "commit", "assets"}, "manifest_schema")
-    version, build, tag, commit = (manifest[key] for key in ("version", "build", "tag", "commit"))
+    version, build, tag, commit = (
+        manifest[key] for key in ("version", "build", "tag", "commit")
+    )
     require(text_matches(version, VERSION), "version")
     require(text_matches(build, r"[1-9][0-9]{0,8}"), "build")
     require(tag == "v" + version, "tag")
     require(text_matches(commit, COMMIT) and tag_commit == commit, "commit")
-    require(isinstance(release, dict) and release.get("draft") is False
-            and release.get("prerelease") is False and release.get("tag_name") == tag, "release_kind")
-    require(release.get("html_url") == f"https://github.com/{REPOSITORY}/releases/tag/{tag}", "release_origin")
+    require(
+        isinstance(release, dict)
+        and release.get("draft") is False
+        and release.get("prerelease") is False
+        and release.get("tag_name") == tag,
+        "release_kind",
+    )
+    require(
+        release.get("html_url")
+        == f"https://github.com/{REPOSITORY}/releases/tag/{tag}",
+        "release_origin",
+    )
     version_tuple = tuple(map(int, version.split(".")))
     asset_kinds = {"source", "universal"}
     if version_tuple >= (1, 1, 5):
@@ -196,34 +271,64 @@ def validate_release(release, manifest_bytes, sums_bytes, tag_commit):
     for kind in sorted(asset_kinds):
         value = manifest["assets"][kind]
         exact(value, {"name", "bytes", "sha256"}, "asset_schema")
-        expected = (f"TokenStatMenu-{version}-universal.dmg"
-                    if kind == "dmg" else f"TokenStatMenu-{version}-{kind}.zip")
+        expected = (
+            f"TokenStatMenu-{version}-universal.dmg"
+            if kind == "dmg"
+            else f"TokenStatMenu-{version}-{kind}.zip"
+        )
+        if version_tuple >= (1, 1, 7):
+            expected = {
+                "source": "TokenStatMenu-source.zip",
+                "universal": "TokenStatMenu.zip",
+                "dmg": "TokenStatMenu.dmg",
+            }[kind]
         require(value["name"] == expected, "asset_name")
         maximum = MAX_SOURCE_BYTES if kind == "source" else 128 * 1024 * 1024
-        require(type(value["bytes"]) is int and 0 < value["bytes"] <= maximum, "asset_size")
+        require(
+            type(value["bytes"]) is int and 0 < value["bytes"] <= maximum, "asset_size"
+        )
         require(text_matches(value["sha256"], SHA256), "asset_sha")
         declared[expected] = (value["bytes"], value["sha256"])
-    require(isinstance(sums_bytes, bytes) and len(sums_bytes) <= MAX_SUMS_BYTES, "sums_size")
+    require(
+        isinstance(sums_bytes, bytes) and len(sums_bytes) <= MAX_SUMS_BYTES, "sums_size"
+    )
     declared["release-manifest.json"] = (len(manifest_bytes), sha(manifest_bytes))
-    expected_sums = "".join(f"{declared[name][1]}  {name}\n" for name in sorted(declared)).encode()
+    expected_sums = "".join(
+        f"{declared[name][1]}  {name}\n" for name in sorted(declared)
+    ).encode()
     require(sums_bytes == expected_sums, "sums_identity")
     declared["SHA256SUMS"] = (len(sums_bytes), sha(sums_bytes))
     assets = release.get("assets")
     require(isinstance(assets, list) and len(assets) == len(declared), "release_assets")
     observed = set()
     for asset in assets:
-        require(isinstance(asset, dict) and isinstance(asset.get("name"), str), "release_assets")
+        require(
+            isinstance(asset, dict) and isinstance(asset.get("name"), str),
+            "release_assets",
+        )
         name = asset["name"]
-        require(name in declared and name not in observed and asset.get("state") == "uploaded", "release_assets")
+        require(
+            name in declared
+            and name not in observed
+            and asset.get("state") == "uploaded",
+            "release_assets",
+        )
         observed.add(name)
-        require(type(asset.get("size")) is int and asset["size"] == declared[name][0], "release_asset_size")
+        require(
+            type(asset.get("size")) is int and asset["size"] == declared[name][0],
+            "release_asset_size",
+        )
         if asset.get("digest") is not None:
-            require(asset["digest"] == "sha256:" + declared[name][1], "release_asset_digest")
+            require(
+                asset["digest"] == "sha256:" + declared[name][1], "release_asset_digest"
+            )
         expected_url = DOWNLOAD + tag + "/" + name
         require(asset.get("browser_download_url") == expected_url, "release_asset_url")
         validate_download_url(expected_url, redirect=False)
     source = manifest["assets"]["source"]
-    return ReleasePin(version, build, tag, commit, source["name"], source["bytes"], source["sha256"])
+    return ReleasePin(
+        version, build, tag, commit, source["name"], source["bytes"], source["sha256"]
+    )
 
 
 def needs_update(current_pin, candidate_pin):
@@ -241,21 +346,36 @@ def needs_update(current_pin, candidate_pin):
 
 def validate_source_archive(source_bytes, pin):
     validate_pin(pin)
-    require(isinstance(source_bytes, bytes) and len(source_bytes) <= MAX_SOURCE_BYTES
-            and len(source_bytes) == pin.source_bytes and sha(source_bytes) == pin.source_sha256, "source_identity")
+    require(
+        isinstance(source_bytes, bytes)
+        and len(source_bytes) <= MAX_SOURCE_BYTES
+        and len(source_bytes) == pin.source_bytes
+        and sha(source_bytes) == pin.source_sha256,
+        "source_identity",
+    )
     try:
         with zipfile.ZipFile(io.BytesIO(source_bytes)) as archive:
             members = archive.infolist()
             require(0 < len(members) <= MAX_SOURCE_FILES, "source_count")
-            require(sum(member.file_size for member in members) <= MAX_UNCOMPRESSED_BYTES, "source_expanded_size")
+            require(
+                sum(member.file_size for member in members) <= MAX_UNCOMPRESSED_BYTES,
+                "source_expanded_size",
+            )
             names, data = set(), {}
             for member in members:
                 name = member.filename
                 components = name.rstrip("/").split("/")
-                require(member.orig_filename == name and name not in names
-                        and "\\" not in name and components[0] == "TokenStatMenu"
-                        and all(component not in ("", ".", "..") for component in components)
-                        and not any(ord(c) < 32 or ord(c) == 127 for c in name), "source_path")
+                require(
+                    member.orig_filename == name
+                    and name not in names
+                    and "\\" not in name
+                    and components[0] == "TokenStatMenu"
+                    and all(
+                        component not in ("", ".", "..") for component in components
+                    )
+                    and not any(ord(c) < 32 or ord(c) == 127 for c in name),
+                    "source_path",
+                )
                 names.add(name)
                 mode = member.external_attr >> 16
                 if member.is_dir():
@@ -263,13 +383,42 @@ def validate_source_archive(source_bytes, pin):
                     continue
                 require(len(components) > 1 and stat.S_ISREG(mode), "source_member")
                 data["/".join(components[1:])] = archive.read(member)
-            required = {"Resources/Info.plist", "Resources/AppIcon.icns", "TokenStatMenu.xcodeproj/project.pbxproj",
-                        "TokenStatMenu.xcodeproj/xcshareddata/xcschemes/TokenStatMenu.xcscheme",
-                        "Sources/TokenStatMenu/TokenStatMenuApp.swift"}
-            require(required <= set(data) and any(name.startswith("Sources/TokenStatCore/") for name in data), "source_files")
+            required = {
+                "Resources/Info.plist",
+                "Resources/AppIcon.icns",
+                "TokenStatMenu.xcodeproj/project.pbxproj",
+                "TokenStatMenu.xcodeproj/xcshareddata/xcschemes/TokenStatMenu.xcscheme",
+                "Sources/TokenStatMenu/TokenStatMenuApp.swift",
+            }
+            if tuple(map(int, pin.version.split("."))) >= (1, 1, 6):
+                required |= {
+                    "Resources/WidgetExtension-Info.plist",
+                    "Resources/WidgetExtension.entitlements",
+                    "Resources/TokenStatMenu.entitlements",
+                    "Sources/TokenStatWidgetExtension/TokenStatWidget.swift",
+                    "Sources/TokenStatWidgetShared/WidgetQuotaSnapshot.swift",
+                }
+            require(
+                required <= set(data)
+                and any(name.startswith("Sources/TokenStatCore/") for name in data),
+                "source_files",
+            )
             info = plistlib.loads(data["Resources/Info.plist"])
-            require(isinstance(info, dict) and info.get("CFBundleShortVersionString") == pin.version
-                    and info.get("CFBundleVersion") == pin.build, "source_version")
+            require(
+                isinstance(info, dict)
+                and info.get("CFBundleShortVersionString") == pin.version
+                and info.get("CFBundleVersion") == pin.build,
+                "source_version",
+            )
+            if tuple(map(int, pin.version.split("."))) >= (1, 1, 6):
+                widget_info = plistlib.loads(
+                    data["Resources/WidgetExtension-Info.plist"]
+                )
+                require(
+                    widget_info.get("CFBundleShortVersionString") == pin.version
+                    and widget_info.get("CFBundleVersion") == pin.build,
+                    "source_widget_version",
+                )
             require(data["Resources/AppIcon.icns"].startswith(b"icns"), "source_icon")
     except ValidationError:
         raise
@@ -277,11 +426,13 @@ def validate_source_archive(source_bytes, pin):
         raise ValidationError("source_archive") from None
 
 
-def render_formula(pin):
+def render_legacy_formula(pin):
     validate_pin(pin)
     header = PIN_PREFIX + json_bytes(asdict(pin)).decode() + "\n"
     # Only validated scalar metadata is substituted into this fixed recipe.
-    return header + f'''require "shellwords"
+    return (
+        header
+        + f'''require "shellwords"
 
 class Tokenstatmenu < Formula
   desc "Native menu bar usage statistics for Seasun Token Hub"
@@ -376,11 +527,92 @@ class Tokenstatmenu < Formula
   end
 end
 '''
+    )
+
+
+def render_formula(pin):
+    # Preserve the published 1.1.5 template byte-for-byte for pin migration.
+    result = render_legacy_formula(pin)
+    version = tuple(map(int, pin.version.split(".")))
+    if version < (1, 1, 6):
+        return result
+    if version >= (1, 1, 7):
+        result = result.replace(
+            "  depends_on macos: :ventura",
+            "  depends_on arch: :arm64\n  depends_on macos: :ventura",
+        )
+        result = result.replace(
+            'architecture = Hardware::CPU.arm? ? "arm64" : "x86_64"',
+            'architecture = "arm64"',
+        )
+    result = result.replace(
+        '"GENERATE_PKGINFO_FILE=NO", ',
+        '"TOKENSTAT_WIDGET_GROUP=group.com.tupig.TokenStatMenu",\n               ',
+    )
+    signing = """    group = "group.com.tupig.TokenStatMenu"
+    widget = app/"Contents/PlugIns/TokenStatMenuWidget.appex"
+    %w[WidgetExtension TokenStatMenu].each do |name|
+      entitlement = buildpath/"#{name}.resolved.entitlements"
+      entitlement.write (buildpath/"Resources/#{name}.entitlements").read.gsub("$(TOKENSTAT_WIDGET_GROUP)", group)
+    end
+    system "/usr/bin/codesign", "--force", "--sign", "-",
+           "--entitlements", buildpath/"WidgetExtension.resolved.entitlements", widget
+    system "/usr/bin/codesign", "--force", "--sign", "-",
+           "--entitlements", buildpath/"TokenStatMenu.resolved.entitlements", app"""
+    result = result.replace(
+        '    system "/usr/bin/codesign", "--force", "--sign", "-", app', signing
+    )
+    result = result.replace(
+        "      Contents/Resources/AppIcon.icns",
+        """      Contents/PkgInfo
+      Contents/PlugIns/TokenStatMenuWidget.appex/Contents/Info.plist
+      Contents/PlugIns/TokenStatMenuWidget.appex/Contents/MacOS/TokenStatMenuWidget
+      Contents/PlugIns/TokenStatMenuWidget.appex/Contents/_CodeSignature/CodeResources
+      Contents/Resources/AppIcon.icns""",
+    )
+    widget_tests = """    widget = app/"Contents/PlugIns/TokenStatMenuWidget.appex"
+    widget_info = widget/"Contents/Info.plist"
+    group = "group.com.tupig.TokenStatMenu"
+    assert_equal "APPL????", (app/"Contents/PkgInfo").read
+    assert_equal version.to_s,
+                 Utils.safe_popen_read(plist, "-c", "Print :CFBundleShortVersionString", widget_info).strip
+    assert_equal "BUILD_VALUE", Utils.safe_popen_read(plist, "-c", "Print :CFBundleVersion", widget_info).strip
+    assert_equal "com.tupig.TokenStatMenu.Widget",
+                 Utils.safe_popen_read(plist, "-c", "Print :CFBundleIdentifier", widget_info).strip
+    extension_point = Utils.safe_popen_read(plist, "-c", "Print :NSExtension:NSExtensionPointIdentifier",
+                                          widget_info).strip
+    assert_equal "com.apple.widgetkit-extension", extension_point
+    [info, widget_info].each do |file|
+      assert_equal group, Utils.safe_popen_read(plist, "-c", "Print :TokenStatWidgetGroup", file).strip
+    end
+    assert_equal architecture,
+                 Utils.safe_popen_read("/usr/bin/lipo", "-archs", widget/"Contents/MacOS/TokenStatMenuWidget").strip
+    [app, widget].each do |bundle|
+      entitlements = Utils.safe_popen_read("/usr/bin/codesign", "-d", "--entitlements", ":-", bundle)
+      parsed = ::Plist.parse_xml(entitlements)
+      assert_equal [group], parsed["com.apple.security.application-groups"]
+      expected_keys = ["com.apple.security.application-groups"]
+      if bundle == widget
+        expected_keys << "com.apple.security.app-sandbox"
+        assert_equal true, parsed["com.apple.security.app-sandbox"]
+      end
+      assert_equal expected_keys.sort, parsed.keys.sort
+    end
+""".replace("BUILD_VALUE", pin.build)
+    result = result.replace(
+        "    assert_equal architecture, actual_arch\n",
+        "    assert_equal architecture, actual_arch\n" + widget_tests,
+    )
+    result = result.replace(
+        "      Built locally from source with ad-hoc signing; this is not Apple notarization.",
+        "      Built locally from source with ad-hoc signing; this is not Apple notarization.\n      Widget App Group access is not guaranteed by ad-hoc signing. The menu bar and panel remain available.",
+    )
+    return result
 
 
 def read_current_pin(formula_text):
     lines = formula_text.splitlines()
-    records = [line[len(PIN_PREFIX):] for line in lines if line.startswith(PIN_PREFIX)]
+    records = [line[len(PIN_PREFIX) :] for line in lines if line.startswith(PIN_PREFIX)]
     require(len(records) == 1, "formula_pin")
     pin = pin_from_json(records[0].encode())
     require(formula_text == render_formula(pin), "formula_template")
@@ -407,39 +639,67 @@ def stage_candidate(output_path, formula_text):
     return True
 
 
-def prepare_publication(current_pin, tested_pin, latest_pin, expected_blob_sha, current_blob_sha):
-    validate_pin(tested_pin); validate_pin(latest_pin)
+def prepare_publication(
+    current_pin, tested_pin, latest_pin, expected_blob_sha, current_blob_sha
+):
+    validate_pin(tested_pin)
+    validate_pin(latest_pin)
     require(tested_pin == latest_pin, "tested_pin_changed")
-    require(text_matches(expected_blob_sha, COMMIT) and current_blob_sha == expected_blob_sha, "blob_conflict")
+    require(
+        text_matches(expected_blob_sha, COMMIT)
+        and current_blob_sha == expected_blob_sha,
+        "blob_conflict",
+    )
     if not needs_update(current_pin, tested_pin):
         return None
-    return {"message": "Update tokenstatmenu to " + tested_pin.version,
-            "content": base64.b64encode(render_formula(tested_pin).encode()).decode(),
-            "sha": expected_blob_sha, "branch": "main"}
+    return {
+        "message": "Update tokenstatmenu to " + tested_pin.version,
+        "content": base64.b64encode(render_formula(tested_pin).encode()).decode(),
+        "sha": expected_blob_sha,
+        "branch": "main",
+    }
 
 
 def resolve_tag(transport, tag):
     require(text_matches(tag, "v" + VERSION), "tag")
-    ref = parse_json(transport.get(API + "/git/ref/tags/" + tag, max_bytes=MAX_API_BYTES), MAX_API_BYTES)
+    ref = parse_json(
+        transport.get(API + "/git/ref/tags/" + tag, max_bytes=MAX_API_BYTES),
+        MAX_API_BYTES,
+    )
     require(isinstance(ref, dict) and ref.get("ref") == "refs/tags/" + tag, "tag_ref")
-    node = ref.get("object"); visited = set()
+    node = ref.get("object")
+    visited = set()
     for _ in range(5):
-        require(isinstance(node, dict) and text_matches(node.get("sha"), COMMIT), "tag_object")
+        require(
+            isinstance(node, dict) and text_matches(node.get("sha"), COMMIT),
+            "tag_object",
+        )
         if node.get("type") == "commit":
             return node["sha"]
         require(node.get("type") == "tag" and node["sha"] not in visited, "tag_object")
         visited.add(node["sha"])
-        response = parse_json(transport.get(API + "/git/tags/" + node["sha"], max_bytes=MAX_API_BYTES), MAX_API_BYTES)
+        response = parse_json(
+            transport.get(API + "/git/tags/" + node["sha"], max_bytes=MAX_API_BYTES),
+            MAX_API_BYTES,
+        )
         require(isinstance(response, dict), "tag_object")
         node = response.get("object")
     raise ValidationError("tag_depth")
 
 
 def fetch_pin(transport):
-    release = parse_json(transport.get(API + "/releases/latest", max_bytes=MAX_API_BYTES), MAX_API_BYTES)
-    require(isinstance(release, dict) and text_matches(release.get("tag_name"), "v" + VERSION), "tag")
+    release = parse_json(
+        transport.get(API + "/releases/latest", max_bytes=MAX_API_BYTES), MAX_API_BYTES
+    )
+    require(
+        isinstance(release, dict)
+        and text_matches(release.get("tag_name"), "v" + VERSION),
+        "tag",
+    )
     tag = release["tag_name"]
-    manifest = transport.get(DOWNLOAD + tag + "/release-manifest.json", max_bytes=MAX_MANIFEST_BYTES)
+    manifest = transport.get(
+        DOWNLOAD + tag + "/release-manifest.json", max_bytes=MAX_MANIFEST_BYTES
+    )
     sums = transport.get(DOWNLOAD + tag + "/SHA256SUMS", max_bytes=MAX_SUMS_BYTES)
     return validate_release(release, manifest, sums, resolve_tag(transport, tag))
 
@@ -457,7 +717,11 @@ def main(argv=None, *, transport=None):
     args = parser.parse_args(argv)
     try:
         require(not args.current.is_symlink(), "formula_symlink")
-        current = read_current_pin(args.current.read_text()) if args.current.exists() else None
+        current = (
+            read_current_pin(args.current.read_text())
+            if args.current.exists()
+            else None
+        )
         client = transport if transport is not None else PublicTransport()
         latest = fetch_pin(client)
         if args.expected_pin:
@@ -467,16 +731,26 @@ def main(argv=None, *, transport=None):
             tested = latest
         changed = needs_update(current, latest)
         if args.prepare_publication:
-            require(args.expected_pin is not None and current is not None, "publication_inputs")
-            payload = prepare_publication(current, tested, latest, args.old_blob_sha, args.current_blob_sha)
+            require(
+                args.expected_pin is not None and current is not None,
+                "publication_inputs",
+            )
+            payload = prepare_publication(
+                current, tested, latest, args.old_blob_sha, args.current_blob_sha
+            )
             if payload is not None:
                 stage_candidate(args.output, json_bytes(payload).decode() + "\n")
         elif changed:
-            archive = client.get(DOWNLOAD + latest.tag + "/" + latest.source_name, max_bytes=MAX_SOURCE_BYTES)
+            archive = client.get(
+                DOWNLOAD + latest.tag + "/" + latest.source_name,
+                max_bytes=MAX_SOURCE_BYTES,
+            )
             validate_source_archive(archive, latest)
             stage_candidate(args.output, render_formula(latest))
             if args.pin_output:
-                stage_candidate(args.pin_output, json_bytes(asdict(latest)).decode() + "\n")
+                stage_candidate(
+                    args.pin_output, json_bytes(asdict(latest)).decode() + "\n"
+                )
         if args.github_output:
             with args.github_output.open("a", encoding="utf-8") as handle:
                 handle.write("changed=" + str(changed).lower() + "\n")
