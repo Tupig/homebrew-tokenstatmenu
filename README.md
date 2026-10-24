@@ -31,13 +31,25 @@ tokenstatmenu
 
 升级替换磁盘文件，不替换运行中的进程。不要同时启动手动副本。个人偏好与手动 App 都会保留。
 
-Tap 每小时检查稳定 Release，也可由维护者手动触发。检查身份、摘要和源码后，在 macOS 构建并执行 style/audit/test，最后单独写入 Formula。配方更新后，用户仍需运行 `brew update` 和 `brew upgrade`。
+Tap 每小时检查稳定 Release，也可由维护者手动触发。检查身份、摘要和源码后，在 macOS 仅执行静态 style/audit；CI 不安装、源码构建或签名 App。最后的写入仍独立检查候选 pin 与原配方 blob。配方更新后，用户仍需运行 `brew update` 和 `brew upgrade`。
 
 ## 签名与小组件
 
 本机采用 ad hoc 签名，不是 Developer ID 或 Apple 公证。1.1.7 配方包含 Widget 扩展，先签扩展、再签主 App，检查八文件结构和 arm64。但 ad hoc 签名不保证 App Group 授权；系统小组件可能无法获取数据，菜单栏和面板仍可用。见 [#88](https://github.com/Tupig/TokenStatMenu/issues/88)。
 
 `brew test` 不启动 GUI，不访问企业服务，也不能代替真实小组件验收。配方不会清除隔离属性、重置权限或绕过 Gatekeeper。
+
+正式二进制渠道改进由 [#88](https://github.com/Tupig/TokenStatMenu/issues/88) / [#92](https://github.com/Tupig/TokenStatMenu/issues/92) 跟踪：维护者仅在本机构建签名，Tap 消费同一份 DMG，不重建重签。当前旧 Formula 保留，不自动卸载或迁移用户安装；合格正式资产出现前不生成 Cask 或猜测 SHA。
+
+维护者可对下载的候选执行只读验收；所有预期值必须来自独立批准的发布记录，而不是包内自报：
+
+```bash
+python3 -B script/verify_release_dmg.py --dmg <DMG路径> --sha256 <批准的SHA256> \
+  --team <批准的团队> --group <批准的AppGroup> \
+  --version <批准的版本> --build <批准的build> --commit <批准的完整提交>
+```
+
+检查要求有效 Developer ID、profile 和公证，通过后仍不等于系统 Widget 实装通过。脚本只读挂载并卸载，不安装、启动、签名或更改隔离属性。
 
 ## 下载与开发
 
@@ -86,13 +98,25 @@ tokenstatmenu
 
 Upgrades replace files, not running processes. Do not run manual and Homebrew copies together. Preferences and manual Apps are preserved.
 
-The Tap checks stable Releases hourly or on manual dispatch. Identity, digest and source validation precede macOS build/style/audit/test. A separate publication job then updates the formula. Users still need to run update and upgrade.
+The Tap checks stable Releases hourly or on manual dispatch. Identity, digest and source validation precede static macOS style/audit checks only; CI does not install, build or sign the App. The separate write still verifies the candidate pin and previous Formula blob. Users still need to run update and upgrade.
 
 ## Signing and Widget
 
 Builds are ad hoc signed, not Developer ID signed or notarized. The 1.1.7 formula embeds the Widget, signs it before the App and validates the eight-file arm64 Bundle. Ad hoc signing does not guarantee App Group authorization, so Widget data may be unavailable; the menu bar and panel remain usable. See [#88](https://github.com/Tupig/TokenStatMenu/issues/88).
 
 `brew test` does not launch the GUI or access enterprise services. It is not a real Widget acceptance test. The formula does not remove quarantine, reset permissions or bypass Gatekeeper.
+
+The binary-channel transition is tracked by [#88](https://github.com/Tupig/TokenStatMenu/issues/88) / [#92](https://github.com/Tupig/TokenStatMenu/issues/92): maintainers build and sign only locally, and the Tap consumes the identical DMG without rebuilding or re-signing. The old Formula and installations remain intact; no Cask or guessed SHA is generated before qualified public assets exist.
+
+Maintainers can run read-only acceptance on a downloaded candidate. Every expected value must come from an independently approved release record, not the bundle itself:
+
+```bash
+python3 -B script/verify_release_dmg.py --dmg <DMG-path> --sha256 <approved-SHA256> \
+  --team <approved-team> --group <approved-AppGroup> \
+  --version <approved-version> --build <approved-build> --commit <approved-full-commit>
+```
+
+It requires valid Developer ID signing, profiles and notarization, but does not establish system Widget installation acceptance. The script mounts read-only and detaches without installing, launching, signing or modifying quarantine.
 
 ## Downloads and Development
 
