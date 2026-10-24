@@ -126,13 +126,16 @@ def read_plist(path):
     require(path.stat().st_size <= MAX_PLIST_BYTES, str(path) + ": oversized plist")
     return parse_plist(path.read_bytes(), str(path))
 
-def inspect_dmg(path, identity):
+def inspect_dmg(path, identity, stream=None):
     require(
         path.suffix.lower() == ".dmg" and path.is_file() and not path.is_symlink(),
         "expected regular .dmg",
     )
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    own_stream = stream is None
+    if own_stream:
+        stream = path.open("rb")
+    try:
         before = os.fstat(stream.fileno())
         require(
             stat.S_ISREG(before.st_mode) and 0 < before.st_size <= MAX_DMG_BYTES,
@@ -142,9 +145,13 @@ def inspect_dmg(path, identity):
             identity.size is None or before.st_size == identity.size,
             "DMG size mismatch",
         )
+        stream.seek(0)
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
         after = os.fstat(stream.fileno())
+    finally:
+        if own_stream:
+            stream.close()
     stamp = lambda value: (
         value.st_dev,
         value.st_ino,
@@ -393,13 +400,16 @@ def check_mounted(mount, identity):
 def verify_release_dmg(dmg, identity):
     identity.validate()
     path = Path(dmg).absolute()
-    initial = inspect_dmg(path, identity)
-    temporary = Path(tempfile.mkdtemp(prefix="tokenstatmenu-dmg-"))
-    mount = temporary / "mount"
-    mount.mkdir()
+    stream = path.open("rb")
+    temporary = None
+    mount = None
     attempted = False
     detached = True
     try:
+        initial = inspect_dmg(path, identity, stream)
+        temporary = Path(tempfile.mkdtemp(prefix="tokenstatmenu-dmg-"))
+        mount = temporary / "mount"
+        mount.mkdir()
         attempted = True
         detached = False
         attached = run_command(
@@ -413,7 +423,7 @@ def verify_release_dmg(dmg, identity):
             "-plist",
             "-mountpoint",
             mount,
-            path,
+            "/dev/fd/" + str(stream.fileno()),
         )
         metadata = parse_plist(attached.stdout, "hdiutil attach")
         entities = metadata.get("system-entities")
@@ -429,16 +439,17 @@ def verify_release_dmg(dmg, identity):
         require(mounts == [str(mount)], "unexpected mounted volumes")
         check_mounted(mount, identity)
         require(
-            inspect_dmg(path, identity) == initial, "DMG changed during verification"
+            inspect_dmg(path, identity, stream) == initial, "DMG changed during verification"
         )
     finally:
         try:
-            if attempted:
+            if attempted and mount is not None:
                 run_command("hdiutil", "detach", mount)
                 detached = True
         finally:
+            stream.close()
             # 绝不递归删除挂载点；detach 失败保留目录用于人工恢复并传播失败。
-            if detached:
+            if detached and mount is not None and temporary is not None:
                 mount.rmdir()
                 temporary.rmdir()
     return {

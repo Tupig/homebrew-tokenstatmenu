@@ -289,7 +289,10 @@ def workflow_commands(job, expected_blocks):
         ]
         assert lines and lines[0] == "set -euo pipefail"
         blocks.append(lines)
-    expected = [block.strip().splitlines() for block in expected_blocks]
+    expected = [
+        [line.strip() for line in block.strip().splitlines() if line.strip()]
+        for block in expected_blocks
+    ]
     # Exact blocks reject ignored failures, pipelines, echo/comment substitutes,
     # disabled errexit and extra assignments that could replace a tested pin.
     assert blocks == expected, "reviewed straight-line command blocks required"
@@ -438,6 +441,11 @@ def validate_update_workflow(document):
             'old_blob_sha="$OLD_BLOB_SHA"\n'
             'current_blob_sha="$(gh api repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --jq .sha)"\n'
             'python3 script/update_formula.py --prepare-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha" --current-blob-sha "$current_blob_sha"\n'
+            'if [ ! -f "$RUNNER_TEMP/publication.json" ]; then\n'
+            '  echo "No publication payload; live Formula already matches."\n'
+            "  exit 0\n"
+            "fi\n"
+            'python3 -c \'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert set(p)=={"message","content","sha","branch"} and p["content"] and p["sha"] and p["branch"]=="main"\' "$RUNNER_TEMP/publication.json"\n'
             'gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"',
         ],
     )
@@ -483,6 +491,11 @@ def valid_workflow_fixture():
         'old_blob_sha="$OLD_BLOB_SHA"\n'
         'current_blob_sha="$(gh api repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --jq .sha)"\n'
         'python3 script/update_formula.py --prepare-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha" --current-blob-sha "$current_blob_sha"\n'
+        'if [ ! -f "$RUNNER_TEMP/publication.json" ]; then\n'
+        '  echo "No publication payload; live Formula already matches."\n'
+        "  exit 0\n"
+        "fi\n"
+        'python3 -c \'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert set(p)=={"message","content","sha","branch"} and p["content"] and p["sha"] and p["branch"]=="main"\' "$RUNNER_TEMP/publication.json"\n'
         'gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"\n'
     )
     condition = "needs.check.outputs.changed == 'true'"

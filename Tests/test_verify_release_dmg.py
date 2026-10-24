@@ -206,6 +206,7 @@ class VerificationTests(unittest.TestCase):
         self.assertFalse(self.mount.parent.exists())
         attach = self.calls[0]
         self.assertEqual(attach[0], "hdiutil")
+        self.assertTrue(any(arg.startswith("/dev/fd/") for arg in attach[1]))
         for flag in ("-readonly", "-nobrowse", "-noautoopen", "-plist", "-mountpoint"):
             self.assertIn(flag, attach[1])
         verifies = [
