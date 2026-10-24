@@ -91,5 +91,5 @@ jobs:
             echo "No publication payload; live Formula already matches."
             exit 0
           fi
-          python3 -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert set(p)=={"message","content","sha","branch"} and p["content"] and p["sha"] and p["branch"]=="main"' "$RUNNER_TEMP/publication.json"
+          python3 script/update_formula.py --verify-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha"
           gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"

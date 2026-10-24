@@ -652,12 +652,38 @@ def prepare_publication(
     )
     if not needs_update(current_pin, tested_pin):
         return None
+    return publication_payload(tested_pin, expected_blob_sha)
+
+
+def publication_payload(pin, blob_sha):
+    validate_pin(pin)
+    require(text_matches(blob_sha, COMMIT), "blob_sha")
+    formula = render_formula(pin)
     return {
-        "message": "Update tokenstatmenu to " + tested_pin.version,
-        "content": base64.b64encode(render_formula(tested_pin).encode()).decode(),
-        "sha": expected_blob_sha,
+        "message": "Update tokenstatmenu to " + pin.version,
+        "content": base64.b64encode(formula.encode()).decode(),
+        "sha": blob_sha,
         "branch": "main",
     }
+
+
+def verify_publication_payload(payload, pin, blob_sha):
+    """Reject any payload whose decoded Formula is not this exact tested pin."""
+    require(
+        isinstance(payload, dict)
+        and set(payload) == {"message", "content", "sha", "branch"},
+        "publication_shape",
+    )
+    expected = publication_payload(pin, blob_sha)
+    require(payload["branch"] == "main", "publication_branch")
+    require(payload["sha"] == blob_sha, "publication_sha")
+    require(payload["message"] == expected["message"], "publication_message")
+    try:
+        text = base64.b64decode(payload["content"], validate=True).decode("utf-8")
+    except (ValueError, TypeError, UnicodeError):
+        raise ValidationError("publication_content") from None
+    require(text == render_formula(pin), "publication_content")
+    return text
 
 
 def resolve_tag(transport, tag):
@@ -712,6 +738,7 @@ def main(argv=None, *, transport=None):
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--expected-pin")
     parser.add_argument("--prepare-publication", action="store_true")
+    parser.add_argument("--verify-publication", action="store_true")
     parser.add_argument("--old-blob-sha")
     parser.add_argument("--current-blob-sha")
     args = parser.parse_args(argv)
@@ -730,11 +757,24 @@ def main(argv=None, *, transport=None):
         else:
             tested = latest
         changed = needs_update(current, latest)
-        if args.prepare_publication:
+        require(
+            not (args.prepare_publication and args.verify_publication),
+            "publication_mode",
+        )
+        if args.prepare_publication or args.verify_publication:
             require(
                 args.expected_pin is not None and current is not None,
                 "publication_inputs",
             )
+            require(text_matches(args.old_blob_sha, COMMIT), "blob_sha")
+        if args.verify_publication:
+            require(
+                args.output.is_file() and not args.output.is_symlink(),
+                "publication_file",
+            )
+            payload = parse_json(args.output.read_bytes(), MAX_API_BYTES)
+            verify_publication_payload(payload, tested, args.old_blob_sha)
+        elif args.prepare_publication:
             payload = prepare_publication(
                 current, tested, latest, args.old_blob_sha, args.current_blob_sha
             )

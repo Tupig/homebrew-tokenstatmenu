@@ -445,7 +445,7 @@ def validate_update_workflow(document):
             '  echo "No publication payload; live Formula already matches."\n'
             "  exit 0\n"
             "fi\n"
-            'python3 -c \'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert set(p)=={"message","content","sha","branch"} and p["content"] and p["sha"] and p["branch"]=="main"\' "$RUNNER_TEMP/publication.json"\n'
+            'python3 script/update_formula.py --verify-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha"\n'
             'gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"',
         ],
     )
@@ -495,7 +495,7 @@ def valid_workflow_fixture():
         '  echo "No publication payload; live Formula already matches."\n'
         "  exit 0\n"
         "fi\n"
-        'python3 -c \'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert set(p)=={"message","content","sha","branch"} and p["content"] and p["sha"] and p["branch"]=="main"\' "$RUNNER_TEMP/publication.json"\n'
+        'python3 script/update_formula.py --verify-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha"\n'
         'gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"\n'
     )
     condition = "needs.check.outputs.changed == 'true'"
@@ -1155,6 +1155,32 @@ class PublicationGateChecks(unittest.TestCase):
         ):
             with self.assertRaises(subject.ValidationError):
                 subject.prepare_publication(old, tested, tested, expected, current)
+
+    def test_publication_content_must_match_rendered_tested_pin(self):
+        tested = ReleaseFixture().pin()
+        blob = "e" * 40
+        payload = subject.prepare_publication(
+            ReleaseFixture("1.1.2", "4", OLD_COMMIT).pin(), tested, tested, blob, blob
+        )
+        self.assertEqual(
+            subject.verify_publication_payload(payload, tested, blob),
+            subject.render_formula(tested),
+        )
+        import base64
+
+        tampered = dict(payload)
+        tampered["content"] = base64.b64encode(
+            b"class Tokenstatmenu < Formula\nend\n"
+        ).decode()
+        with self.assertRaises(subject.ValidationError):
+            subject.verify_publication_payload(tampered, tested, blob)
+        stale = dict(payload)
+        stale["message"] = "Update tokenstatmenu to 1.1.2"
+        with self.assertRaises(subject.ValidationError):
+            subject.verify_publication_payload(stale, tested, blob)
+        not_b64 = dict(payload, content="!!!!")
+        with self.assertRaises(subject.ValidationError):
+            subject.verify_publication_payload(not_b64, tested, blob)
 
 
 class FormulaAndWorkflowChecks(unittest.TestCase):
