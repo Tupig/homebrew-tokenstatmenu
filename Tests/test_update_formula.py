@@ -255,8 +255,84 @@ def workflow_events(document):
     return set(value)
 
 
+def validate_no_ci_build_or_signing(document):
+    """Statically reject local-only build/sign commands in every workflow job."""
+    for job in document["jobs"].values():
+        for step in job.get("steps", []):
+            # Tokenization removes shell quoting/escapes without executing any
+            # command, including the intentionally unsafe mutation fixtures.
+            script = " ".join(shlex.split(step.get("run", ""), comments=True))
+            assert not re.search(
+                r"\bbrew\s+(?:--[\w=-]+\s+)*(?:install|test)\b", script
+            ), "brew install/test is local-only"
+            assert not re.search(r"\bxcodebuild\b", script), "xcodebuild is local-only"
+            assert not re.search(r"\bswift\s+(?:--[\w=-]+\s+)*build\b", script), (
+                "swift build is local-only"
+            )
+            assert not re.search(
+                r"\bcodesign\b[^;|&]*?(?:--sign(?:=|\s|$)|\s-[A-Za-z]*s)",
+                script,
+            ), "codesign signing is local-only"
+
+
+def workflow_commands(job, expected_blocks):
+    """Require reviewed straight-line blocks, including exact failure handling."""
+    blocks = []
+    for step in job.get("steps", []):
+        if "run" not in step:
+            continue
+        assert "shell" not in step and "env" not in step
+        lines = [
+            line.strip()
+            for line in step["run"].splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert lines and lines[0] == "set -euo pipefail"
+        blocks.append(lines)
+    expected = [block.strip().splitlines() for block in expected_blocks]
+    # Exact blocks reject ignored failures, pipelines, echo/comment substitutes,
+    # disabled errexit and extra assignments that could replace a tested pin.
+    assert blocks == expected, "reviewed straight-line command blocks required"
+    return [shlex.split(line, comments=True) for block in blocks for line in block]
+
+
+def validate_verify_workflow(document):
+    validate_no_ci_build_or_signing(document)
+    assert workflow_events(document) == {"push", "pull_request", "workflow_dispatch"}
+    assert document.get("permissions") == {"contents": "read"}
+    jobs = document["jobs"]
+    assert set(jobs) == {"unit", "native"}
+    assert jobs["native"].get("needs") == "unit"
+    assert "if" not in jobs["unit"] and "if" not in jobs["native"]
+    assert "defaults" not in document
+    for job in jobs.values():
+        assert "defaults" not in job
+        assert job.get("permissions") == {"contents": "read"}
+        assert not job.get("continue-on-error", False)
+        for step in job.get("steps", []):
+            assert "if" not in step and not step.get("continue-on-error", False)
+            if "uses" in step:
+                assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", step["uses"])
+                assert step.get("with", {}).get("persist-credentials") is False
+                assert step.get("with", {}).get("ref") == "${{ github.sha }}"
+    workflow_commands(
+        jobs["unit"], ["set -euo pipefail\npython3 -B -m unittest discover -s Tests -v"]
+    )
+    workflow_commands(
+        jobs["native"],
+        [
+            "set -euo pipefail\n"
+            "brew trust --formula Tupig/tokenstatmenu/tokenstatmenu\n"
+            'brew tap Tupig/tokenstatmenu "$GITHUB_WORKSPACE"\n'
+            "brew style Tupig/tokenstatmenu/tokenstatmenu\n"
+            "brew audit --strict Tupig/tokenstatmenu/tokenstatmenu"
+        ],
+    )
+
+
 def validate_update_workflow(document):
     """Bounded BP26 three-job contract; this is not a general YAML scanner."""
+    validate_no_ci_build_or_signing(document)
     assert workflow_events(document) == {"schedule", "workflow_dispatch"}
     assert document.get("permissions") == {"contents": "read"}
     assert "concurrency" in document
@@ -280,51 +356,60 @@ def validate_update_workflow(document):
         if condition.startswith("${{") and condition.endswith("}}"):
             condition = condition[3:-2].strip()
         assert condition == required_condition
-    assert "changed" in jobs["check"].get("outputs", {})
+    assert jobs["check"].get("outputs") == {
+        "changed": "${{ steps.candidate.outputs.changed }}",
+        "pin": "${{ steps.candidate.outputs.pin }}",
+        "old_blob_sha": "${{ steps.base.outputs.old_blob_sha }}",
+    }
+    assert "defaults" not in document
+    assert "env" not in document
     for job in jobs.values():
+        assert "defaults" not in job
         assert not job.get("continue-on-error", False)
         for step in job.get("steps", []):
             assert "if" not in step and not step.get("continue-on-error", False)
             if "uses" in step:
                 assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", step["uses"])
                 assert step.get("with", {}).get("persist-credentials") is False
+                assert step.get("with", {}).get("ref") == "${{ github.sha }}"
 
-    def commands(job):
-        result = []
-        for step in job.get("steps", []):
-            lines = step.get("run", "").splitlines()
-            active_lines = [
-                line.strip()
-                for line in lines
-                if line.strip() and not line.lstrip().startswith("#")
-            ]
-            if "run" in step:
-                assert active_lines and active_lines[0] == "set -euo pipefail"
-            for line in lines:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                # BP26 uses straight-line shell calls into the reviewed Python
-                # gate, not shell control flow or ignored failures around it.
-                assert not any(operator in line for operator in ("||", "&&", ";", "\\"))
-                tokens = shlex.split(line, comments=True)
-                assert not tokens or tokens[0] not in {
-                    "if",
-                    "then",
-                    "else",
-                    "fi",
-                    "for",
-                    "while",
-                    "until",
-                    "case",
-                    "esac",
-                    "!",
-                }
-                result.append(tokens)
-        return result
-
-    check = commands(jobs["check"])
-    smoke = commands(jobs["smoke"])
+    assert "env" not in jobs["check"]
+    for name in ("smoke", "publish"):
+        assert (
+            jobs[name].get("env", {}).get("TESTED_PIN")
+            == "${{ needs.check.outputs.pin }}"
+        )
+    assert (
+        jobs["publish"].get("env", {}).get("OLD_BLOB_SHA")
+        == "${{ needs.check.outputs.old_blob_sha }}"
+    )
+    assert jobs["publish"]["env"].get("GH_TOKEN") == "${{ github.token }}"
+    check_steps = [step for step in jobs["check"]["steps"] if "run" in step]
+    assert [step.get("id") for step in check_steps] == [None, "base", "candidate"]
+    check = workflow_commands(
+        jobs["check"],
+        [
+            "set -euo pipefail\npython3 -B -m unittest discover -s Tests -v",
+            "set -euo pipefail\n"
+            'old_blob_sha="$(git rev-parse HEAD:Formula/tokenstatmenu.rb)"\n'
+            'echo "old_blob_sha=$old_blob_sha" >> "$GITHUB_OUTPUT"',
+            "set -euo pipefail\n"
+            'python3 script/update_formula.py --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/tokenstatmenu.rb" --github-output "$GITHUB_OUTPUT"',
+        ],
+    )
+    smoke = workflow_commands(
+        jobs["smoke"],
+        [
+            "set -euo pipefail\n"
+            "python3 -B -m unittest discover -s Tests -v\n"
+            "brew trust --formula Tupig/tokenstatmenu/tokenstatmenu\n"
+            'brew tap Tupig/tokenstatmenu "$GITHUB_WORKSPACE"\n'
+            'tap_directory="$(brew --repository Tupig/tokenstatmenu)"\n'
+            'python3 script/update_formula.py --current "$tap_directory/Formula/tokenstatmenu.rb" --output "$tap_directory/Formula/tokenstatmenu.rb" --expected-pin "$TESTED_PIN"\n'
+            "brew style Tupig/tokenstatmenu/tokenstatmenu\n"
+            "brew audit --strict Tupig/tokenstatmenu/tokenstatmenu",
+        ],
+    )
     assert any(
         c[:6] == ["python3", "-B", "-m", "unittest", "discover", "-s"] and "Tests" in c
         for c in check
@@ -337,17 +422,25 @@ def validate_update_workflow(document):
     )
     assert any(c[:2] == ["brew", "style"] for c in smoke)
     assert any(c[:2] == ["brew", "audit"] for c in smoke)
+    assert any(c[:3] == ["brew", "trust", "--formula"] for c in smoke)
+    assert any(c[:2] == ["brew", "tap"] for c in smoke)
     assert any(
-        c[:2] == ["brew", "install"]
-        and "--build-from-source" in c
-        and not any(flag in c for flag in ("--force", "--overwrite"))
+        c[:6] == ["python3", "-B", "-m", "unittest", "discover", "-s"] and "Tests" in c
         for c in smoke
     )
-    assert any(c[:2] == ["brew", "test"] for c in smoke)
     write_steps = [step["run"] for step in jobs["publish"]["steps"] if "run" in step]
     assert len(write_steps) == 1, "one reviewed publication block only"
     write = write_steps[0]
-    active = commands(jobs["publish"])
+    active = workflow_commands(
+        jobs["publish"],
+        [
+            "set -euo pipefail\n"
+            'old_blob_sha="$OLD_BLOB_SHA"\n'
+            'current_blob_sha="$(gh api repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --jq .sha)"\n'
+            'python3 script/update_formula.py --prepare-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha" --current-blob-sha "$current_blob_sha"\n'
+            'gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"',
+        ],
+    )
     assert any(c == ["set", "-euo", "pipefail"] for c in active)
     gates = [
         index
@@ -383,26 +476,44 @@ def validate_update_workflow(document):
 def valid_workflow_fixture():
     checkout = {
         "uses": "actions/checkout@" + "a" * 40,
-        "with": {"persist-credentials": False},
+        "with": {"persist-credentials": False, "ref": "${{ github.sha }}"},
     }
     publish = (
-        'set -euo pipefail\npython3 script/update_formula.py --prepare-publication --old-blob-sha "$old_blob_sha" --output publication.json\n'
-        "gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input publication.json\n"
+        "set -euo pipefail\n"
+        'old_blob_sha="$OLD_BLOB_SHA"\n'
+        'current_blob_sha="$(gh api repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --jq .sha)"\n'
+        'python3 script/update_formula.py --prepare-publication --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/publication.json" --expected-pin "$TESTED_PIN" --old-blob-sha "$old_blob_sha" --current-blob-sha "$current_blob_sha"\n'
+        'gh api --method PUT repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --input "$RUNNER_TEMP/publication.json"\n'
     )
     condition = "needs.check.outputs.changed == 'true'"
     return {
         "on": {"schedule": [{"cron": "17 * * * *"}], "workflow_dispatch": {}},
         "permissions": {"contents": "read"},
-        "concurrency": "update-formula",
+        "concurrency": {
+            "group": "update-tokenstatmenu-formula",
+            "cancel-in-progress": False,
+        },
         "jobs": {
             "check": {
                 "runs-on": "ubuntu-latest",
                 "permissions": {"contents": "read"},
-                "outputs": {"changed": "synthetic"},
+                "outputs": {
+                    "changed": "${{ steps.candidate.outputs.changed }}",
+                    "pin": "${{ steps.candidate.outputs.pin }}",
+                    "old_blob_sha": "${{ steps.base.outputs.old_blob_sha }}",
+                },
                 "steps": [
                     copy.deepcopy(checkout),
                     {
-                        "run": "set -euo pipefail\npython3 -B -m unittest discover -s Tests -v\npython3 script/update_formula.py --current Formula/tokenstatmenu.rb --output candidate.rb\n"
+                        "run": "set -euo pipefail\npython3 -B -m unittest discover -s Tests -v\n"
+                    },
+                    {
+                        "id": "base",
+                        "run": 'set -euo pipefail\nold_blob_sha="$(git rev-parse HEAD:Formula/tokenstatmenu.rb)"\necho "old_blob_sha=$old_blob_sha" >> "$GITHUB_OUTPUT"\n',
+                    },
+                    {
+                        "id": "candidate",
+                        "run": 'set -euo pipefail\npython3 script/update_formula.py --current Formula/tokenstatmenu.rb --output "$RUNNER_TEMP/tokenstatmenu.rb" --github-output "$GITHUB_OUTPUT"\n',
                     },
                 ],
             },
@@ -411,10 +522,15 @@ def valid_workflow_fixture():
                 "permissions": {"contents": "read"},
                 "needs": ["check"],
                 "if": condition,
+                "env": {
+                    "TESTED_PIN": "${{ needs.check.outputs.pin }}",
+                    "HOMEBREW_NO_AUTO_UPDATE": "1",
+                    "HOMEBREW_NO_INSTALL_CLEANUP": "1",
+                },
                 "steps": [
                     copy.deepcopy(checkout),
                     {
-                        "run": "set -euo pipefail\nbrew style Formula/tokenstatmenu.rb\nbrew audit --strict Tupig/tokenstatmenu/tokenstatmenu\nbrew install --build-from-source Tupig/tokenstatmenu/tokenstatmenu\nbrew test Tupig/tokenstatmenu/tokenstatmenu\n"
+                        "run": 'set -euo pipefail\npython3 -B -m unittest discover -s Tests -v\nbrew trust --formula Tupig/tokenstatmenu/tokenstatmenu\nbrew tap Tupig/tokenstatmenu "$GITHUB_WORKSPACE"\ntap_directory="$(brew --repository Tupig/tokenstatmenu)"\npython3 script/update_formula.py --current "$tap_directory/Formula/tokenstatmenu.rb" --output "$tap_directory/Formula/tokenstatmenu.rb" --expected-pin "$TESTED_PIN"\nbrew style Tupig/tokenstatmenu/tokenstatmenu\nbrew audit --strict Tupig/tokenstatmenu/tokenstatmenu\n'
                     },
                 ],
             },
@@ -423,6 +539,11 @@ def valid_workflow_fixture():
                 "permissions": {"contents": "write"},
                 "needs": ["check", "smoke"],
                 "if": condition,
+                "env": {
+                    "TESTED_PIN": "${{ needs.check.outputs.pin }}",
+                    "OLD_BLOB_SHA": "${{ needs.check.outputs.old_blob_sha }}",
+                    "GH_TOKEN": "${{ github.token }}",
+                },
                 "steps": [copy.deepcopy(checkout), {"run": publish}],
             },
         },
@@ -1046,6 +1167,24 @@ class FormulaAndWorkflowChecks(unittest.TestCase):
             parse_workflow((ROOT / ".github/workflows/update.yml").read_text())
         )
 
+    def test_update_fixture_preserves_actual_identity_and_publication_protection(self):
+        actual = parse_workflow((ROOT / ".github/workflows/update.yml").read_text())
+        fixture = valid_workflow_fixture()
+        validate_update_workflow(fixture)
+        self.assertEqual(fixture["concurrency"], actual["concurrency"])
+        for name, job in actual["jobs"].items():
+            expected = fixture["jobs"][name]
+            for key in ("outputs", "env", "permissions"):
+                self.assertEqual(expected.get(key), job.get(key), (name, key))
+            actual_steps = [step for step in job["steps"] if "run" in step]
+            fixture_steps = [step for step in expected["steps"] if "run" in step]
+            self.assertEqual(len(fixture_steps), len(actual_steps), name)
+            for actual_step, fixture_step in zip(actual_steps, fixture_steps):
+                self.assertEqual(fixture_step.get("id"), actual_step.get("id"), name)
+                self.assertEqual(
+                    fixture_step["run"].strip(), actual_step["run"].strip(), name
+                )
+
     def test_workflow_contract_detects_known_unsafe_mutations(self):
         validate_update_workflow(valid_workflow_fixture())
         mutations = [
@@ -1084,7 +1223,8 @@ class FormulaAndWorkflowChecks(unittest.TestCase):
             lambda d: d["jobs"]["publish"]["steps"][-1].update(
                 {
                     "run": d["jobs"]["publish"]["steps"][-1]["run"].replace(
-                        "--output publication.json", "--output publication.json || true"
+                        '--output "$RUNNER_TEMP/publication.json"',
+                        '--output "$RUNNER_TEMP/publication.json" || true',
                     )
                 }
             ),
@@ -1120,13 +1260,225 @@ class FormulaAndWorkflowChecks(unittest.TestCase):
 
     def test_verify_workflow_cannot_publish_or_use_privileged_pr_event(self):
         document = parse_workflow((ROOT / ".github/workflows/verify.yml").read_text())
-        self.assertIn("pull_request", workflow_events(document))
-        self.assertNotIn("pull_request_target", workflow_events(document))
-        self.assertEqual(document.get("permissions"), {"contents": "read"})
-        for job in document["jobs"].values():
-            self.assertEqual(
-                job.get("permissions", {"contents": "read"}), {"contents": "read"}
+        validate_verify_workflow(document)
+
+    def test_verify_contract_rejects_bypassed_commands_and_failure_handling(self):
+        original = parse_workflow((ROOT / ".github/workflows/verify.yml").read_text())
+        for job_name, job in original["jobs"].items():
+            for step_index, step in enumerate(job["steps"]):
+                if "run" not in step:
+                    continue
+                lines = step["run"].splitlines()
+                for line in lines[1:]:
+                    for replacement in (
+                        line + " || true",
+                        line + " | cat",
+                        "# " + line,
+                        "echo " + line,
+                        "true # " + line,
+                        "! " + line,
+                        line.replace(
+                            "Tupig/tokenstatmenu/tokenstatmenu", "Other/tap/formula"
+                        ),
+                    ):
+                        if replacement == line:
+                            continue
+                        with self.subTest(job=job_name, replacement=replacement):
+                            mutated = copy.deepcopy(original)
+                            mutated["jobs"][job_name]["steps"][step_index]["run"] = (
+                                step["run"].replace(line, replacement)
+                            )
+                            with self.assertRaises(AssertionError):
+                                validate_verify_workflow(mutated)
+                for replacement in (
+                    "",
+                    "set -eu",
+                    "set +e",
+                    "set -euo pipefail\nset +e",
+                ):
+                    with self.subTest(job=job_name, failure_handling=replacement):
+                        mutated = copy.deepcopy(original)
+                        mutated["jobs"][job_name]["steps"][step_index]["run"] = step[
+                            "run"
+                        ].replace("set -euo pipefail", replacement)
+                        with self.assertRaises(AssertionError):
+                            validate_verify_workflow(mutated)
+                for override in (
+                    {"shell": "bash {0}"},
+                    {"env": {"TESTED_PIN": "other"}},
+                ):
+                    with self.subTest(job=job_name, override=override):
+                        mutated = copy.deepcopy(original)
+                        mutated["jobs"][job_name]["steps"][step_index].update(override)
+                        with self.assertRaises(AssertionError):
+                            validate_verify_workflow(mutated)
+
+    def test_update_contract_rejects_missing_or_rewired_pin_and_blob_gates(self):
+        real = parse_workflow((ROOT / ".github/workflows/update.yml").read_text())
+        for source, original in (
+            ("fixture", valid_workflow_fixture()),
+            ("actual", real),
+        ):
+            validate_update_workflow(original)
+            for job_name, argument in (
+                ("smoke", '--expected-pin "$TESTED_PIN"'),
+                ("publish", '--expected-pin "$TESTED_PIN"'),
+                ("publish", '--old-blob-sha "$old_blob_sha"'),
+                ("publish", '--current-blob-sha "$current_blob_sha"'),
+                ("check", '--github-output "$GITHUB_OUTPUT"'),
+            ):
+                for replacement in ("", argument.split()[0] + ' "unverified"'):
+                    with self.subTest(
+                        source=source,
+                        job=job_name,
+                        argument=argument,
+                        replacement=replacement,
+                    ):
+                        mutated = copy.deepcopy(original)
+                        step = mutated["jobs"][job_name]["steps"][-1]
+                        self.assertIn(argument, step["run"])
+                        step["run"] = step["run"].replace(argument, replacement)
+                        with self.assertRaises(AssertionError):
+                            validate_update_workflow(mutated)
+            for job_name, key in (
+                ("smoke", "TESTED_PIN"),
+                ("publish", "TESTED_PIN"),
+                ("publish", "OLD_BLOB_SHA"),
+            ):
+                for value in (None, "unverified", "${{ needs.check.outputs.changed }}"):
+                    with self.subTest(
+                        source=source, job=job_name, env=key, value=value
+                    ):
+                        mutated = copy.deepcopy(original)
+                        env = mutated["jobs"][job_name]["env"]
+                        if value is None:
+                            env.pop(key)
+                        else:
+                            env[key] = value
+                        with self.assertRaises(AssertionError):
+                            validate_update_workflow(mutated)
+                with self.subTest(source=source, job=job_name, step_override=key):
+                    mutated = copy.deepcopy(original)
+                    mutated["jobs"][job_name]["steps"][-1]["env"] = {key: "unverified"}
+                    with self.assertRaises(AssertionError):
+                        validate_update_workflow(mutated)
+            for key in ("changed", "pin", "old_blob_sha"):
+                for value in (
+                    None,
+                    "unverified",
+                    "${{ steps.other.outputs." + key + " }}",
+                ):
+                    with self.subTest(source=source, output=key, value=value):
+                        mutated = copy.deepcopy(original)
+                        outputs = mutated["jobs"]["check"]["outputs"]
+                        if value is None:
+                            outputs.pop(key)
+                        else:
+                            outputs[key] = value
+                        with self.assertRaises(AssertionError):
+                            validate_update_workflow(mutated)
+            for step_index in (2, 3):
+                for value in (None, "other"):
+                    with self.subTest(source=source, step_index=step_index, id=value):
+                        mutated = copy.deepcopy(original)
+                        step = mutated["jobs"]["check"]["steps"][step_index]
+                        if value is None:
+                            step.pop("id")
+                        else:
+                            step["id"] = value
+                        with self.assertRaises(AssertionError):
+                            validate_update_workflow(mutated)
+            for job_name, old, new in (
+                (
+                    "check",
+                    'old_blob_sha="$(git rev-parse HEAD:Formula/tokenstatmenu.rb)"',
+                    'old_blob_sha="unverified"',
+                ),
+                (
+                    "check",
+                    'echo "old_blob_sha=$old_blob_sha" >> "$GITHUB_OUTPUT"',
+                    "# old blob output removed",
+                ),
+                (
+                    "publish",
+                    'old_blob_sha="$OLD_BLOB_SHA"',
+                    'old_blob_sha="unverified"',
+                ),
+                (
+                    "publish",
+                    'current_blob_sha="$(gh api repos/Tupig/homebrew-tokenstatmenu/contents/Formula/tokenstatmenu.rb --jq .sha)"',
+                    'current_blob_sha="$old_blob_sha"',
+                ),
+                (
+                    "smoke",
+                    '--expected-pin "$TESTED_PIN"',
+                    '--expected-pin "$TESTED_PIN" || true',
+                ),
+                (
+                    "publish",
+                    '--current-blob-sha "$current_blob_sha"',
+                    '--current-blob-sha "$current_blob_sha" || true',
+                ),
+            ):
+                with self.subTest(source=source, job=job_name, bypass=old):
+                    mutated = copy.deepcopy(original)
+                    matched = 0
+                    for step in mutated["jobs"][job_name]["steps"]:
+                        if old in step.get("run", ""):
+                            step["run"] = step["run"].replace(old, new)
+                            matched += 1
+                    self.assertEqual(matched, 1)
+                    with self.assertRaises(AssertionError):
+                        validate_update_workflow(mutated)
+
+    def test_both_workflows_reject_local_only_commands_in_every_job(self):
+        commands = (
+            "brew install Tupig/tokenstatmenu/tokenstatmenu",
+            "brew install --build-from-source Tupig/tokenstatmenu/tokenstatmenu",
+            "brew test Tupig/tokenstatmenu/tokenstatmenu",
+            "brew --verbose install Tupig/tokenstatmenu/tokenstatmenu",
+            '/opt/homebrew/bin/brew "install" tokenstatmenu',
+            "xcodebuild -scheme TokenStatMenu",
+            "/usr/bin/xcodebuild -version",
+            "swift build -c release",
+            "/usr/bin/swift build",
+            "codesign --force --sign - TokenStatMenu.app",
+            "codesign --sign=- TokenStatMenu.app",
+            "codesign -s - TokenStatMenu.app",
+            "/usr/bin/codesign -fs- TokenStatMenu.app",
+        )
+        for filename, validator in (
+            ("verify.yml", validate_verify_workflow),
+            ("update.yml", validate_update_workflow),
+        ):
+            original = parse_workflow(
+                (ROOT / ".github/workflows" / filename).read_text()
             )
+            validator(original)
+            for job in original["jobs"]:
+                for command in commands:
+                    with self.subTest(workflow=filename, job=job, command=command):
+                        mutated = copy.deepcopy(original)
+                        mutated["jobs"][job]["steps"].append(
+                            {"run": "set -euo pipefail\n" + command + "\n"}
+                        )
+                        with self.assertRaises(AssertionError):
+                            validator(mutated)
+
+    def test_static_command_policy_allows_read_only_signature_checks(self):
+        validate_no_ci_build_or_signing(
+            {
+                "jobs": {
+                    "static": {
+                        "steps": [
+                            {
+                                "run": "codesign --verify --deep --strict TokenStatMenu.app\ncodesign -d --entitlements :- TokenStatMenu.app\n"
+                            }
+                        ]
+                    }
+                }
+            }
+        )
 
 
 @unittest.skipUnless(

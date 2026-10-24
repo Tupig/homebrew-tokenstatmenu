@@ -40,12 +40,10 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - name: Test the checked-out Formula in this disposable runner
+      - name: Statically validate the checked-out Formula
         run: |
           set -euo pipefail
           brew trust --formula Tupig/tokenstatmenu/tokenstatmenu
           brew tap Tupig/tokenstatmenu "$GITHUB_WORKSPACE"
           brew style Tupig/tokenstatmenu/tokenstatmenu
           brew audit --strict Tupig/tokenstatmenu/tokenstatmenu
-          brew install --build-from-source Tupig/tokenstatmenu/tokenstatmenu
-          brew test Tupig/tokenstatmenu/tokenstatmenu
