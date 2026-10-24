@@ -51,6 +51,8 @@ python3 -B script/verify_release_dmg.py --dmg <DMG路径> --sha256 <批准的SHA
 
 检查要求有效 Developer ID、profile 和公证，通过后仍不等于系统 Widget 实装通过。脚本只读挂载并卸载，不安装、启动、签名或更改隔离属性。
 
+在同样的批准参数后，`script/prepare_cask.py` 可加 `--output <不存在的候选.rb路径>`，完整验证本地 DMG 后才生成 Cask 候选。它不检查公开资产可下载；必须另行确认正式公开 DMG 的 SHA 相同，才能提交到 `Casks/`。不会覆盖已有候选，也不会卸载旧 Formula。
+
 ## 下载与开发
 
 不想编译可用主项目的 [DMG](https://github.com/Tupig/TokenStatMenu/releases)。1.1.7 资产名为 `TokenStatMenu.dmg`、`TokenStatMenu.zip` 和 `TokenStatMenu-source.zip`，版本在 Release 标签中。历史版本保留旧命名和旧模板。
@@ -117,6 +119,8 @@ python3 -B script/verify_release_dmg.py --dmg <DMG-path> --sha256 <approved-SHA2
 ```
 
 It requires valid Developer ID signing, profiles and notarization, but does not establish system Widget installation acceptance. The script mounts read-only and detaches without installing, launching, signing or modifying quarantine.
+
+With the same approved arguments, `script/prepare_cask.py` additionally accepts `--output <new-candidate.rb-path>` and generates a Cask candidate only after full local DMG verification. It does not establish public download availability: confirm that the official public DMG has the identical SHA before committing to `Casks/`. Existing outputs are never overwritten, and the old Formula is not removed.
 
 ## Downloads and Development
 
